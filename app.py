@@ -387,7 +387,19 @@ with colR:
                 output_blocks.append(m.to_block_text(include_header=include_header))
 
             output_text = "\n\n".join(output_blocks).strip()
-
+     
+            MAX_PREVIEW_CHARS = 8000  # Cloud 안전선
+            
+            preview_text = output_text[:MAX_PREVIEW_CHARS]
+            if len(output_text) > MAX_PREVIEW_CHARS:
+                preview_text += "\n\n... (이하 생략, 다운로드 파일에 전체 포함)"
+            
+            st.text_area(
+                "④ 결과 미리보기 (일부만 표시)",
+                value=preview_text,
+                height=420
+            )
+        
             st.text_area(
                 "④ 결과 텍스트 (그대로 복사해서 한글/워드에 붙여넣기)",
                 value=output_text,
@@ -406,3 +418,4 @@ with colR:
 
     else:
         st.info("왼쪽에서 txt 파일 업로드 또는 붙여넣기를 해주세요.")
+
