@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from typing import List, Optional, Tuple
 
-import streamlit as st
+import streamlit as st # type: ignore
 
 
 # =========================
@@ -70,6 +70,14 @@ RE_TIME_ONLY = re.compile(
 # 한 줄 메시지 예: [이름] [오전 8:47] 본문
 RE_INLINE_MSG = re.compile(
     r"^\[(?P<sender>[^\]]+)\]\s*\[(?P<ampm>오전|오후)\s*(?P<h>\d{1,2}):(?P<min>\d{2})\]\s*(?P<body>.*)$"
+)
+
+# 안드로이드 한 줄 메시지 예:
+# 2023년 10월 11일 오전 8:07, 이름 : 본문
+RE_ANDROID_INLINE = re.compile(
+    r"^(?P<y>\d{4})년\s*(?P<m>\d{1,2})월\s*(?P<d>\d{1,2})일\s*"
+    r"(?P<ampm>오전|오후)\s*(?P<h>\d{1,2}):(?P<min>\d{2}),\s*"
+    r"(?P<sender>[^:]+)\s*:\s*(?P<body>.*)$"
 )
 
 def _ampm_to_24h(h: int, ampm: Optional[str]) -> int:
@@ -153,22 +161,74 @@ def split_messages(raw_text: str, today: date) -> List[KMessage]:
                     body_lines=current_body_lines[:],
                 )
             )
+    
         current_sender = None
         current_dt = None
         current_header_lines = []
         current_body_lines = []
 
+    def looks_like_name(s: str) -> bool:
+        s = s.strip()
+        return (
+            1 <= len(s) <= 20
+            and " " not in s
+            and not s.startswith("[")
+        )
+
     i = 0
     while i < len(lines):
         line = lines[i].strip()
+       
+        # 1️⃣ 날짜 인식 (메시지 시작 전에서만 허용)
+        if current_dt is None:
+            # 날짜 구분선: ---------------- 2026년 1월 4일 일요일 ----------------
+            m_div = RE_DATE_DIVIDER.search(line)
+            if m_div:
+                y, m, d = map(int, m_div.groups())
+                current_date = date(y, m, d)
+                i += 1
+                continue
 
-        # 1️⃣ 날짜 단독 줄 인식
-        m_date = RE_DATE_LINE.search(line)
-        if m_date:
-            y, m, d = map(int, m_date.groups())
-            current_date = date(y, m, d)
+            # 줄 전체가 날짜인 경우만 허용 (예: 2026년 1월 11일 일요일)
+            m_date = RE_DATE_LINE.fullmatch(line)
+            if m_date:
+                y, m, d = map(int, m_date.groups())
+                current_date = date(y, m, d)
+                i += 1
+                continue
+
+        # 1.1️⃣ 안드로이드 한 줄 메시지 인식
+        m_android = RE_ANDROID_INLINE.match(line)
+        if m_android:
+            flush()
+
+            y = int(m_android.group("y"))
+            m = int(m_android.group("m"))
+            d = int(m_android.group("d"))
+
+            ampm = m_android.group("ampm")
+            h = int(m_android.group("h"))
+            minute = int(m_android.group("min"))
+
+            hour = 0 if (ampm == "오전" and h == 12) else (
+                h + 12 if (ampm == "오후" and h != 12) else h
+            )
+
+            current_sender = m_android.group("sender").strip()
+            current_dt = datetime(y, m, d, hour, minute)
+
+            current_header_lines = [
+                f"{y}년 {m}월 {d}일 {ampm} {h}:{minute:02d}, {current_sender}"
+            ]
+
+            current_body_lines = []
+            body = m_android.group("body").strip()
+            if body:
+                current_body_lines.append(body)
+
             i += 1
             continue
+
 
         # 1.2️⃣ 한 줄 메시지 인식 (PC/iOS 공통)
         m_inline = RE_INLINE_MSG.match(line)
@@ -208,9 +268,10 @@ def split_messages(raw_text: str, today: date) -> List[KMessage]:
         # 3️⃣ 이름 + 시간 구조 (날짜가 잡힌 상태에서만)
         if (
             current_date
-            and line
+            and current_dt is None
+            and looks_like_name(line)
             and i + 1 < len(lines)
-            and RE_TIME_ONLY.search(lines[i + 1])
+            and RE_TIME_ONLY.fullmatch(lines[i + 1].strip())
         ):
             flush()
             current_sender = line
