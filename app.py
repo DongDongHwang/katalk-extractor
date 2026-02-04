@@ -50,22 +50,18 @@ RE_KO_YMD_TIME = re.compile(
 )
 
 # 날짜 구분선 예: --------------- 2026년 1월 4일 일요일 ---------------
-RE_DATE_DIVIDER = re.compile(r"-+\s*(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일"
+# - 복사본에 따라 요일/괄호 표기가 붙거나, 뒤쪽 구분선이 생략되기도 해서 폭넓게 허용
+RE_DATE_DIVIDER = re.compile(
+    r"-+\s*(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일(?:\s*(?:\([^)]+\)|[가-힣]+))?\s*-*"
 )
 
-# 시간만 있는 줄 예: 오전 9:18 / 오후 12:03
-RE_TIME_ONLY = re.compile(r"(오전|오후)\s*(\d{1,2}):(\d{2})"
-
-)
-# 날짜 단독 줄 예: 2026년 1월 8일 목요일
+# 날짜 단독 줄 예: 2026년 1월 8일 목요일 / 2026년 1월 8일 (목)
 RE_DATE_LINE = re.compile(
-    r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일"
+    r"^\s*(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일(?:\s*(?:\([^)]+\)|[가-힣]+))?\s*$"
 )
 
 # 시간만 있는 줄 예: 오전 9:18 / 오후 12:03
-RE_TIME_ONLY = re.compile(
-    r"(오전|오후)\s*(\d{1,2}):(\d{2})"
-)
+RE_TIME_ONLY = re.compile(r"(오전|오후)\s*(\d{1,2}):(\d{2})")
 
 # 한 줄 메시지 예: [이름] [오전 8:47] 본문
 RE_INLINE_MSG = re.compile(
@@ -178,24 +174,30 @@ def split_messages(raw_text: str, today: date) -> List[KMessage]:
     i = 0
     while i < len(lines):
         line = lines[i].strip()
+
+        # 날짜 구분선/날짜 단독 줄은 "하루 경계"로 메시지 중간에도 등장할 수 있음.
+        # 이 경우 이전 메시지를 먼저 확정(flush)한 뒤 current_date를 갱신해야,
+        # 다음 메시지가 올바른 날짜를 사용한다.
+        m_div_any = RE_DATE_DIVIDER.search(line)
+        if m_div_any:
+            flush()
+            y, m, d = map(int, m_div_any.groups())
+            current_date = date(y, m, d)
+            i += 1
+            continue
+
+        m_date_any = RE_DATE_LINE.fullmatch(line)
+        if m_date_any:
+            flush()
+            y, m, d = map(int, m_date_any.groups())
+            current_date = date(y, m, d)
+            i += 1
+            continue
        
         # 1️⃣ 날짜 인식 (메시지 시작 전에서만 허용)
         if current_dt is None:
-            # 날짜 구분선: ---------------- 2026년 1월 4일 일요일 ----------------
-            m_div = RE_DATE_DIVIDER.search(line)
-            if m_div:
-                y, m, d = map(int, m_div.groups())
-                current_date = date(y, m, d)
-                i += 1
-                continue
-
-            # 줄 전체가 날짜인 경우만 허용 (예: 2026년 1월 11일 일요일)
-            m_date = RE_DATE_LINE.fullmatch(line)
-            if m_date:
-                y, m, d = map(int, m_date.groups())
-                current_date = date(y, m, d)
-                i += 1
-                continue
+            # (날짜 처리는 위에서 current_dt 여부와 무관하게 먼저 처리함)
+            pass
 
         # 1.1️⃣ 안드로이드 한 줄 메시지 인식
         m_android = RE_ANDROID_INLINE.match(line)
@@ -316,6 +318,63 @@ def normalize_lines(text: str) -> List[str]:
     return [t.strip() for t in text.splitlines() if t.strip()]
 
 
+def scan_parse_hints(raw_text: str, today: date, max_lines: int = 200) -> Tuple[dict, List[dict]]:
+    """
+    Streamlit 디버깅용: 원문 첫 N줄을 훑어 어떤 패턴이 매칭되는지 요약.
+    - 반환: (counts, rows)
+    """
+    lines = raw_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    counts = {
+        "lines_total": len(lines),
+        "nonempty": 0,
+        "date_divider": 0,
+        "date_line": 0,
+        "kakao_datetime_any": 0,
+        "time_only": 0,
+        "inline_msg": 0,
+        "android_inline": 0,
+    }
+    rows: List[dict] = []
+
+    for idx, raw_line in enumerate(lines[:max_lines], start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        tags: List[str] = []
+        counts["nonempty"] += 1
+
+        if RE_DATE_DIVIDER.search(line):
+            counts["date_divider"] += 1
+            tags.append("DATE_DIVIDER")
+        if RE_DATE_LINE.fullmatch(line):
+            counts["date_line"] += 1
+            tags.append("DATE_LINE")
+        if parse_kakao_datetime(line, today) is not None:
+            counts["kakao_datetime_any"] += 1
+            tags.append("DATETIME")
+        if RE_TIME_ONLY.fullmatch(line):
+            counts["time_only"] += 1
+            tags.append("TIME_ONLY")
+        if RE_INLINE_MSG.match(line):
+            counts["inline_msg"] += 1
+            tags.append("INLINE_MSG")
+        if RE_ANDROID_INLINE.match(line):
+            counts["android_inline"] += 1
+            tags.append("ANDROID_INLINE")
+
+        if tags:
+            rows.append(
+                {
+                    "line_no": idx,
+                    "tags": ", ".join(tags),
+                    "text": (line[:240] + "…") if len(line) > 240 else line,
+                }
+            )
+
+    return counts, rows
+
+
 def filter_messages(
     messages: List[KMessage],
     start_d: date,
@@ -401,11 +460,36 @@ with colR:
     st.subheader("③ 처리 결과")
 
     if raw_text.strip():
+        debug = st.checkbox("디버깅 정보 표시", value=False)
+        if debug:
+            counts, rows = scan_parse_hints(raw_text, today=today)
+            st.write(
+                "원문 분석(앞부분 기준): "
+                f"총 {counts['lines_total']}줄 / 비어있지 않은 줄 {counts['nonempty']}개, "
+                f"DATE_DIVIDER {counts['date_divider']}, DATE_LINE {counts['date_line']}, "
+                f"DATETIME {counts['kakao_datetime_any']}, TIME_ONLY {counts['time_only']}, "
+                f"INLINE_MSG {counts['inline_msg']}, ANDROID_INLINE {counts['android_inline']}"
+            )
+            if rows:
+                st.dataframe(rows, use_container_width=True, hide_index=True)
+
         msgs = split_messages(raw_text, today=today)
 
         if not msgs:
             st.error("메시지 헤더(날짜/시간)를 인식하지 못했습니다. 카톡 복사 형식을 확인해 주세요.")
         else:
+            if debug:
+                st.write("파싱된 메시지 샘플(최대 10개)")
+                sample = [
+                    {
+                        "sender": m.sender,
+                        "sent_at": m.sent_at.isoformat(sep=" ", timespec="minutes"),
+                        "body_preview": (m.body_text()[:120] + "…") if len(m.body_text()) > 120 else m.body_text(),
+                    }
+                    for m in msgs[:10]
+                ]
+                st.dataframe(sample, use_container_width=True, hide_index=True)
+
             # 기준일(가장 최신 메시지 날짜)
             end_date_auto = max(m.sent_at.date() for m in msgs)
             start_date_auto = end_date_auto - timedelta(days=6)
