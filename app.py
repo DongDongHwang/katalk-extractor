@@ -56,7 +56,6 @@ class CellReport:
 
     absentees_sunday: str = ""
     absentees_week: str = ""
-
     devotion: dict = None  
 
 # =========================
@@ -633,54 +632,51 @@ with colR:
                 senders=senders,
                 keywords=keywords,
             )
-
             st.write(f"총 메시지: **{len(msgs)}** / 필터 통과: **{len(filtered)}**")
 
             # =========================
-# 🆕 셀 리포트 자동 생성
-# =========================
+            # 🆕 셀 리포트 자동 생성
+            # =========================
+            st.subheader("📊 셀 보고서 자동 추출")
 
-st.subheader("📊 셀 보고서 자동 추출")
+            cell_reports = []
+            for m in filtered:
+                r = parse_cell_report(m)
+                if r:
+                    cell_reports.append(r)
 
-cell_reports = []
-for m in filtered:
-    r = parse_cell_report(m)
-    if r:
-        cell_reports.append(r)
+            if not cell_reports:
+                st.info("셀 보고서를 인식하지 못했습니다.")
+            else:
+                import pandas as pd
 
-if not cell_reports:
-    st.info("셀 보고서를 인식하지 못했습니다.")
-else:
-    import pandas as pd
+                rows = []
+                for r in sorted(cell_reports, key=lambda x: x.cell_no):
+                    rows.append({
+                        "셀": f"{r.cell_no}셀",
+                        "주일 재적": r.sunday_total,
+                        "주일 출석": r.sunday_attend,
+                        "주간 재적": r.week_total,
+                        "주간 출석": r.week_attend,
+                        "성경읽기": r.bible,
+                        "기도": r.prayer,
+                        "헌금": r.offering,
+                    })
 
-    rows = []
-    for r in sorted(cell_reports, key=lambda x: x.cell_no):
-        rows.append({
-            "셀": f"{r.cell_no}셀",
-            "주일 재적": r.sunday_total,
-            "주일 출석": r.sunday_attend,
-            "주간 재적": r.week_total,
-            "주간 출석": r.week_attend,
-            "성경읽기": r.bible,
-            "기도": r.prayer,
-            "헌금": r.offering,
-        })
-
-    df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True)
+                df = pd.DataFrame(rows)
+                st.dataframe(df, use_container_width=True)
 
             include_header = st.checkbox("결과에 헤더(이름/날짜) 포함", value=True)
 
             output_blocks = []
             for m in filtered:
-                # 본문이 완전 비어있는 메시지는 제외(원하면 포함 가능)
                 if not m.body_text():
                     continue
                 output_blocks.append(m.to_block_text(include_header=include_header))
 
             output_text = "\n\n".join(output_blocks).strip()
 
-            MAX_PREVIEW_CHARS = 8000  # Cloud 안전선
+            MAX_PREVIEW_CHARS = 8000
 
             preview_text = output_text[:MAX_PREVIEW_CHARS]
             if len(output_text) > MAX_PREVIEW_CHARS:
@@ -692,7 +688,6 @@ else:
                 height=420
             )
 
-            # 텍스트 다운로드(선택)
             st.download_button(
                 "⬇️ 결과를 txt로 다운로드",
                 data=output_text.encode("utf-8"),
@@ -701,7 +696,3 @@ else:
             )
 
             st.caption("⚠️ 결과는 원문을 수정하지 않고, 조건에 맞는 메시지만 발췌합니다.")
-
-    else:
-        st.info("왼쪽에서 txt 파일 업로드 또는 붙여넣기를 해주세요.")
-
