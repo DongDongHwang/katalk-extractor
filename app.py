@@ -36,6 +36,29 @@ class KMessage:
 
         return block.strip()
     
+  # =========================
+# 🆕 셀 리포트 모델
+# =========================
+@dataclass
+class CellReport:
+    cell_no: int
+    leader: str
+
+    sunday_total: int = 0
+    sunday_attend: int = 0
+
+    week_total: int = 0
+    week_attend: int = 0
+
+    bible: int = 0
+    prayer: int = 0
+    offering: int = 0
+
+    absentees_sunday: str = ""
+    absentees_week: str = ""
+
+    devotion: dict = None  
+
 # =========================
 # 1) 날짜 파서 (카톡 "입력 날짜" 기준)
 # =========================
@@ -310,7 +333,98 @@ def split_messages(raw_text: str, today: date) -> List[KMessage]:
     flush()
     return messages
 
+# =========================
+# 🆕 셀 보고서 추출
+# =========================
 
+RE_CELL_ID = re.compile(r"3[- ]?(\d)셀")
+RE_NUMBER = re.compile(r"(\d+)")
+RE_MONEY = re.compile(r"([\d,]+)원")
+
+
+def extract_number(text: str) -> int:
+    m = RE_NUMBER.search(text)
+    return int(m.group(1)) if m else 0
+
+
+def extract_money(text: str) -> int:
+    m = RE_MONEY.search(text)
+    if not m:
+        return 0
+    return int(m.group(1).replace(",", ""))
+
+
+def parse_cell_report(msg: KMessage) -> Optional[CellReport]:
+    body = msg.body_text()
+
+    m_cell = RE_CELL_ID.search(body)
+    if not m_cell:
+        return None
+
+    cell_no = int(m_cell.group(1))
+
+    report = CellReport(
+        cell_no=cell_no,
+        leader=msg.sender,
+        devotion={}
+    )
+
+    lines = body.splitlines()
+    mode = None  # sunday / week
+
+    for line in lines:
+        t = line.strip()
+
+        if "주일 예배 현황" in t:
+            mode = "sunday"
+            continue
+        if "주간 셀예배 출결 현황" in t:
+            mode = "week"
+            continue
+
+        if "- 재적" in t:
+            num = extract_number(t)
+            if mode == "sunday":
+                report.sunday_total = num
+            elif mode == "week":
+                report.week_total = num
+
+        if "- 출석" in t:
+            num = extract_number(t)
+            if mode == "sunday":
+                report.sunday_attend = num
+            elif mode == "week":
+                report.week_attend = num
+
+        if "성경읽기" in t:
+            report.bible = extract_number(t)
+
+        if "- 기도" in t:
+            report.prayer = extract_number(t)
+
+        if "- 헌금" in t:
+            report.offering = extract_money(t)
+
+        if "이번주 결석자" in t:
+            if mode == "sunday":
+                report.absentees_sunday = t
+            elif mode == "week":
+                report.absentees_week = t
+
+        if "- 주일예배" in t:
+            report.devotion["sunday"] = "O" in t
+        if "- 오후예배" in t:
+            report.devotion["afternoon"] = "O" in t
+        if "- CLT" in t:
+            report.devotion["clt"] = "O" in t
+        if "- 성경대학" in t:
+            report.devotion["bible_college"] = "O" in t
+        if "- 금요성령집회" in t:
+            report.devotion["friday"] = "O" in t
+        if "- 새벽예배" in t:
+            report.devotion["dawn"] = extract_number(t)
+
+    return report
 # =========================
 # 3) 필터
 # =========================
@@ -522,6 +636,39 @@ with colR:
 
             st.write(f"총 메시지: **{len(msgs)}** / 필터 통과: **{len(filtered)}**")
 
+            # =========================
+# 🆕 셀 리포트 자동 생성
+# =========================
+
+st.subheader("📊 셀 보고서 자동 추출")
+
+cell_reports = []
+for m in filtered:
+    r = parse_cell_report(m)
+    if r:
+        cell_reports.append(r)
+
+if not cell_reports:
+    st.info("셀 보고서를 인식하지 못했습니다.")
+else:
+    import pandas as pd
+
+    rows = []
+    for r in sorted(cell_reports, key=lambda x: x.cell_no):
+        rows.append({
+            "셀": f"{r.cell_no}셀",
+            "주일 재적": r.sunday_total,
+            "주일 출석": r.sunday_attend,
+            "주간 재적": r.week_total,
+            "주간 출석": r.week_attend,
+            "성경읽기": r.bible,
+            "기도": r.prayer,
+            "헌금": r.offering,
+        })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True)
+
             include_header = st.checkbox("결과에 헤더(이름/날짜) 포함", value=True)
 
             output_blocks = []
@@ -557,3 +704,4 @@ with colR:
 
     else:
         st.info("왼쪽에서 txt 파일 업로드 또는 붙여넣기를 해주세요.")
+
